@@ -5,8 +5,6 @@
 import {
 	createConnection,
 	TextDocuments,
-	Diagnostic,
-	DiagnosticSeverity,
 	ProposedFeatures,
 	InitializeParams,
 	DidChangeConfigurationNotification,
@@ -14,12 +12,17 @@ import {
 	CompletionItemKind,
 	TextDocumentPositionParams,
 	TextDocumentSyncKind,
-	InitializeResult
+	InitializeResult,
+	CodeActionParams,
+	CodeAction,
+	CodeActionKind,
 } from 'vscode-languageserver/node';
 
 import {
 	TextDocument
 } from 'vscode-languageserver-textdocument';
+import { quickfix, isNullOrUndefined } from './codeActionProvider';
+import { getDiagnostics } from './codeDiagnostics';
 
 // Create a connection for the server, using Node's IPC as a transport.
 // Also include all preview / proposed LSP features.
@@ -31,6 +34,7 @@ const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 let hasConfigurationCapability = false;
 let hasWorkspaceFolderCapability = false;
 let hasDiagnosticRelatedInformationCapability = false;
+let hasCodeActionLiteralsCapability = false;
 
 connection.onInitialize((params: InitializeParams) => {
 	const capabilities = params.capabilities;
@@ -48,6 +52,11 @@ connection.onInitialize((params: InitializeParams) => {
 		capabilities.textDocument.publishDiagnostics &&
 		capabilities.textDocument.publishDiagnostics.relatedInformation
 	);
+	hasCodeActionLiteralsCapability = !!(
+		capabilities.textDocument &&
+		capabilities.textDocument.codeAction &&
+		capabilities.textDocument.codeAction.codeActionLiteralSupport
+	);
 
 	const result: InitializeResult = {
 		capabilities: {
@@ -63,6 +72,12 @@ connection.onInitialize((params: InitializeParams) => {
 			workspaceFolders: {
 				supported: true
 			}
+		};
+	}
+
+	if (hasCodeActionLiteralsCapability) {
+		result.capabilities.codeActionProvider = {
+			codeActionKinds: [CodeActionKind.QuickFix],
 		};
 	}
 	return result;
@@ -137,48 +152,21 @@ documents.onDidChangeContent(change => {
 async function validateTextDocument(textDocument: TextDocument): Promise<void> {
 	// In this simple example we get the settings for every validate run.
 	const settings = await getDocumentSettings(textDocument.uri);
-
-	// The validator creates diagnostics for all uppercase words length 2 and more
-	const text = textDocument.getText();
-	const pattern = /\b[A-Z]{2,}\b/g;
-	let m: RegExpExecArray | null;
-
-	let problems = 0;
-	const diagnostics: Diagnostic[] = [];
-	while ((m = pattern.exec(text)) && problems < settings.maxNumberOfProblems) {
-		problems++;
-		const diagnostic: Diagnostic = {
-			severity: DiagnosticSeverity.Warning,
-			range: {
-				start: textDocument.positionAt(m.index),
-				end: textDocument.positionAt(m.index + m[0].length)
-			},
-			message: `${m[0]} is all uppercase.`,
-			source: 'ex'
-		};
-		if (hasDiagnosticRelatedInformationCapability) {
-			diagnostic.relatedInformation = [
-				{
-					location: {
-						uri: textDocument.uri,
-						range: Object.assign({}, diagnostic.range)
-					},
-					message: 'Spelling matters'
-				},
-				{
-					location: {
-						uri: textDocument.uri,
-						range: Object.assign({}, diagnostic.range)
-					},
-					message: 'Particularly for names'
-				}
-			];
-		}
-		diagnostics.push(diagnostic);
-	}
-
-	// Send the computed diagnostics to VSCode.
+	const diagnostics = getDiagnostics(textDocument, settings);
 	connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
+}
+
+connection.onCodeAction(provideCodeActions);
+
+async function provideCodeActions(params: CodeActionParams): Promise<CodeAction[]> {
+	if (!params.context.diagnostics.length) {
+		return [];
+	}
+	const textDocument = documents.all().find((item) => params.textDocument.uri === item.uri);
+	if (isNullOrUndefined(textDocument)) {
+		return [];
+	}
+	return quickfix(textDocument, params);
 }
 
 connection.onDidChangeWatchedFiles(_change => {
