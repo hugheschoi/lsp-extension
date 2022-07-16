@@ -21,17 +21,6 @@ export default function analyzeScript(script: any, textDocument: TextDocument) {
   traverse(scriptAst, {
     enter(path: any) {
       const { node } = path;
-      if (isNoSafeGet(node)) {
-        const range = getPositionRange(node, scriptStart);
-        const text = textDocument.getText(range);
-        if (!text.includes('this')) {
-          const diagnostic: Diagnostic = genDiagnostics(
-            '取值和赋值的时候是否有 safeGet ',
-            range
-          );
-          diagnostics.push(diagnostic);
-        }
-      }
       if (isExceedArguments(node)) {
         const [firstParams, endParams] = [
           node.params[0],
@@ -50,13 +39,6 @@ export default function analyzeScript(script: any, textDocument: TextDocument) {
         const diagnostic: Diagnostic = genDiagnostics(
           '函数参数不多于 2 个，如果有很多参数就利用 object 传递，并使用解构',
           range
-        );
-        diagnostics.push(diagnostic);
-      }
-      if (hasNumberValue(node)) {
-        const diagnostic: Diagnostic = genDiagnostics(
-          '使用静态变量或枚举替换代码中的常数, 增加可读性',
-          getPositionRange(node, scriptStart)
         );
         diagnostics.push(diagnostic);
       }
@@ -146,22 +128,6 @@ function isLongFunction(node: Record<string, any>) {
   );
 }
 
-// 如果一个表达式的值（只限数字，字符串用得很多，比如判断 key 的名称）缺少定义 identity ，那么可以认为它是魔术字符串
-function hasNumberValue(node: Record<string, any>): boolean {
-  if (!node || node.type !== 'BinaryExpression') return false;
-  // 类型还需要结合多种情况定下
-  // 递归 init 或 left 或 right 的类型中有 NumericLiteral 类型，说明有在表达式中
-  if (
-    node.type === 'BinaryExpression' &&
-    (node.left.type === 'NumericLiteral' ||
-      node.right.type === 'NumericLiteral')
-  ) {
-    return true;
-  } else {
-    return hasNumberValue(node.left) || hasNumberValue(node.right);
-  }
-}
-
 // 超过两个参数
 function isExceedArguments(node: Record<string, any>) {
   return node.type === 'ClassMethod' && node.params.length > 2;
@@ -185,20 +151,6 @@ function isExceedBlockStatement(node: any, statementNum: number): any {
       return isExceedBlockStatement(node[key], statementNum);
     });
   }
-}
-
-// 判断是否不安全获取 safeGet
-function isNoSafeGet(node: Record<string, any>) {
-  return (
-    node.type === 'MemberExpression' &&
-    node.object?.property?.name &&
-    node.object?.type === 'MemberExpression' &&
-    node.property?.type === 'Identifier' &&
-    node.property?.name
-    // (!node.object?.object?.object ||
-    //   node.object?.object?.object?.type !== 'ThisExpression')
-  );
-  // 白名单（包含 this，有this 说明）
 }
 
 function getPositionRange(node: any, scriptStart: number) {
